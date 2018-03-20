@@ -1,4 +1,6 @@
-#include "circBuffer.h"
+//#include "circBuffer.h"
+#include <EEPROM.h>
+#include "eeCircBuffer.h"
 #include <WiFiUdp.h>
 #include <WiFiServer.h>
 #include <WiFiClientSecure.h>
@@ -31,6 +33,7 @@ char server[] = "www.timetrials.org.uk";
 
 // Data wire is plugged into port 2 on the Arduino
 #define ONE_WIRE_BUS 2
+#define RED_LED_PIN 0
 // connection to reset for deep sleep waking
 #define SLEEP_WAKE 16
 
@@ -46,9 +49,10 @@ unsigned long lastTempRequest = 0;
 const int resolution = 9;
 const int delayInMillis = 750 / (1 << (12 - resolution));
 int idle = 0;
-const int sleepSeconds = 600;
+const int sleepSeconds = 30;
 unsigned long  awakeTime = 0;
 int awakeSeconds = 0;
+int testCount = 0;
 
 struct VanData {
 //	Dallas temperatures
@@ -62,14 +66,16 @@ struct VanData {
 	int power_W;
 	int yield_kWh;
 	int max_P;
+	int seq;
+	int valid;
 };
-
+VanData nullData;
 VanData currentValues;
-CircularBuffer<VanData,60> dataStore;
+//CircularBuffer<VanData,60> dataStore;
+EECircularBuffer<VanData, 6> dataStore;
+
 
 const byte maxlength = 16;
-//char ssid[maxlength + 1] = "BTHub4-SFQ3";
-//char pw[maxlength + 1] = "42784b6adb";
 char ssid[maxlength + 1] = "XperiaZ2chrisF";
 char pw[maxlength + 1] = "icespy1643";
 
@@ -138,6 +144,13 @@ void setup_ds18B20() {
 
 }
 
+void redLed(int state) {
+	pinMode(RED_LED_PIN, OUTPUT);
+	digitalWrite(RED_LED_PIN, state-1);
+	//delay(10);
+	//digitalWrite(RED_LED_PIN, LOW);
+}
+
 int wifiStatus() {
     int status = WiFi.status();
   //Serial.print("WiFi status: "); Serial.println(status);
@@ -189,12 +202,16 @@ bool startWiFi() {
 
 	Serial.print("Connecting........");
 	while (WiFi.status() != WL_CONNECTED) {
-		delay(100);
+		redLed(HIGH);
+		delay(10);
+		redLed(LOW);
+		delay(90);
 		Serial.print(".");
 		++count;
 		if ((count % 20) == 0)
 		{
 			Serial.println(F("Trying connection"));
+			ESP.wdtFeed();
 		}
 		if (count > 100) {
 			Serial.println("Cannot connect to WiFi, giving up...");
@@ -223,6 +240,7 @@ void setup() {
   setup_ds18B20();
   delay(10);
   awakeSeconds = 0;
+  ESP.wdtEnable(0);
  //startWiFi();
 }
 
@@ -230,11 +248,12 @@ void loop() {
 
 	RecvWithEndMarker();
 	HandleNewData();
+	ESP.wdtFeed();
 
 	static unsigned long prev_millis = 0;
 	if (millis() - prev_millis > 1000) {
 		// i.e. every second
-
+		ESP.wdtFeed();
 		if (++awakeSeconds >= 3)
 		{
 			// should be enough time for Victron to send data
@@ -251,6 +270,7 @@ void loop() {
 		prev_millis = millis();
 	}
 }
+
 
 void convertDelay() {
 	pinMode(ONE_WIRE_BUS, OUTPUT);
@@ -313,10 +333,12 @@ void getTemps() {
 		currentValues.panel_mV = 0;
 		currentValues.power_W = 0;
 	}
-
+	currentValues.valid = true;
+	currentValues.seq = dataStore.remain();
 
 	dataStore.push(currentValues);
 	int stored = dataStore.remain();
+	
 	Serial.print(stored); Serial.println(" value sets stored");
 	for (int rec = stored-1; rec >= 0; rec--)
 	{
@@ -330,8 +352,18 @@ void getTemps() {
 		Serial.print(tt.power_W); Serial.print("  ");
 		Serial.print(tt.yield_kWh); Serial.print("  ");
 		Serial.print(tt.max_P); Serial.println("  ");
-
-
+	}
+	if (++testCount >= 9)
+	{
+		testCount = 0;
+		Serial.println("Shifting out:");
+		for (int rec = stored - 1; rec >= 0; rec--)
+		{
+			VanData tt = dataStore.shift();
+			Serial.print(tt.temp1); Serial.print("  ");
+			Serial.print(tt.temp2); Serial.print("  ");
+			Serial.print(tt.temp3); Serial.println("  ");
+		}
 	}
 }
 void sendData() {
@@ -344,13 +376,19 @@ void sendData() {
   int numRecords = dataStore.remain();
   int sentRecords = 0;
   VanData tt;
-  VanData* ttp;
+  //VanData* ttp;
 
   // Use WiFiClient class to create TCP connections
   WiFiClient client;
-  while ((ttp = dataStore.shift()) != 0)
+  while (true)
   {
-	  tt = *ttp;
+	 // ESP.wdtFeed();
+	  tt = dataStore.shift();
+	  if (tt.valid == false)
+		  break;
+	  redLed(HIGH);
+
+	 // tt = *ttp;
 	  camper["vanT"] = tt.temp1;
 	  camper["shadeT"] = tt.temp2;
 	  camper["fridgeT"] = tt.temp3;
@@ -364,11 +402,12 @@ void sendData() {
 	  camper["maxP"] = tt.max_P;
 
 	  // how out-of-date is this record?
-	  camper["seq"] = numRecords - sentRecords; 
+	  //camper["seq"] = numRecords - sentRecords; 
+	  camper["seq"] = numRecords - tt.seq;
 	  camper["period"] = sleepSeconds;
 
 	  ++sentRecords;
-
+	  Serial.print("sending record ");	  Serial.print(numRecords - tt.seq); Serial.println(" old");
 	  Serial.print("connecting to ");	  Serial.println(server);
 	  const int httpPort = 80;
 
@@ -407,6 +446,7 @@ void sendData() {
 		 // delay(1);
 
 	  }
+	  redLed(LOW);
 	  // Read all the lines of the reply from server and print them to Serial
 	  while (client.available()) {
 		  String line = client.readStringUntil('\r');

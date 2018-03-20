@@ -21,13 +21,13 @@
     <ClInclude Include="__vm\.esp8266-logger.vsarduino.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="circBuffer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="victron.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="eeCircBuffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
