@@ -88,6 +88,9 @@ public:
 	int remain() const {
 		return count;
 	}
+	void reset() {
+		writePos = 0; readPos = 0;  count = 0;
+	}
 
 	// get (but leave) value at position 'pos'
 	T peek(int16_t pos) {

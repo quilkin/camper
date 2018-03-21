@@ -1,4 +1,5 @@
 //#include "circBuffer.h"
+#include "timeserver.h"
 #include <EEPROM.h>
 #include "eeCircBuffer.h"
 #include <WiFiUdp.h>
@@ -53,8 +54,10 @@ const int sleepSeconds = 30;
 unsigned long  awakeTime = 0;
 int awakeSeconds = 0;
 int testCount = 0;
+ulong loggerTime = 0;
 
 struct VanData {
+	ulong time;
 //	Dallas temperatures
 	int temp1;
 	int temp2;
@@ -66,8 +69,8 @@ struct VanData {
 	int power_W;
 	int yield_kWh;
 	int max_P;
-	int seq;
-	int valid;
+	//int seq;
+
 };
 VanData nullData;
 VanData currentValues;
@@ -96,7 +99,7 @@ void readstring(char* buf) {
   }
 
 }
-char outBuf[64];
+char wifiBuf[64];
 
 StaticJsonBuffer<200> jsonBuffer;
 JsonObject& camper = jsonBuffer.createObject();
@@ -235,7 +238,17 @@ void setup() {
   awakeTime = millis();
 
   Serial.begin(115200);
-
+  setupTime();
+  for (int attempt = 0; attempt < 5; attempt++) {
+	  loggerTime = getTime();
+	  if (loggerTime > 0)
+		  break;
+	  delay(10000);
+  }
+  if (loggerTime == 0)
+  {
+	  Serial.println("Unknown log time");
+  }
   setupVictron();
   setup_ds18B20();
   delay(10);
@@ -260,6 +273,7 @@ void loop() {
 			startWiFi();
 			PrintValues();
 			getTemps();
+
 			if (wifiStatus() == 3) {
 				sendData();
 			}
@@ -288,13 +302,6 @@ void getTemps() {
 	sensors.requestTemperatures();
 	convertDelay();
 
-	//sensors.requestTemperaturesByAddress(insideTemp);
-	//convertDelay();
-	//sensors.requestTemperaturesByAddress(outsideTemp);
-	//convertDelay();
-	//sensors.requestTemperaturesByAddress(fridgeTemp);
-	//convertDelay();
-
 	t1 = sensors.getTempC(insideTemp);
 	t2 = sensors.getTempC(outsideTemp);
 	t3 = sensors.getTempC(fridgeTemp);
@@ -306,7 +313,7 @@ void getTemps() {
 	if (t1 < -50 || t1 > 84) {
 		if (t2 < -50 || t2 > 84) {
 			if (t3 < -50 || t3 > 84) {
-				Serial.print("Invalid temperatures");
+				Serial.println("Invalid temperatures");
 				return;
 
 			}
@@ -314,6 +321,12 @@ void getTemps() {
 	}
 
 	Serial.println();
+	if (loggerTime == 0)
+	{
+		Serial.println("Unknown log time");
+		return;
+	}
+	currentValues.time = loggerTime;
 	currentValues.temp1 = (int)(t1 * 10);
 	currentValues.temp2 = (int)(t2 * 10);
 	currentValues.temp3 = (int)(t3 * 10);
@@ -333,8 +346,8 @@ void getTemps() {
 		currentValues.panel_mV = 0;
 		currentValues.power_W = 0;
 	}
-	currentValues.valid = true;
-	currentValues.seq = dataStore.remain();
+	//currentValues.valid = true;
+	//currentValues.seq = dataStore.remain();
 
 	dataStore.push(currentValues);
 	int stored = dataStore.remain();
@@ -343,6 +356,7 @@ void getTemps() {
 	for (int rec = stored-1; rec >= 0; rec--)
 	{
 		VanData tt = dataStore.peek(rec);
+		Serial.print(tt.time); Serial.print(":");
 		Serial.print(tt.temp1); Serial.print("  ");
 		Serial.print(tt.temp2); Serial.print("  ");
 		Serial.print(tt.temp3); Serial.print("  ");
@@ -360,6 +374,7 @@ void getTemps() {
 		for (int rec = stored - 1; rec >= 0; rec--)
 		{
 			VanData tt = dataStore.shift();
+			Serial.print(tt.time); Serial.print(":");
 			Serial.print(tt.temp1); Serial.print("  ");
 			Serial.print(tt.temp2); Serial.print("  ");
 			Serial.print(tt.temp3); Serial.println("  ");
@@ -367,16 +382,10 @@ void getTemps() {
 	}
 }
 void sendData() {
-	// set default values to be overwritten if data avalaible
-
-  //weather["rain"] = 0;
-  //weather["winddir"] = 12345;
-  //weather["windspeed"] = 23456;
 
   int numRecords = dataStore.remain();
   int sentRecords = 0;
   VanData tt;
-  //VanData* ttp;
 
   // Use WiFiClient class to create TCP connections
   WiFiClient client;
@@ -384,8 +393,22 @@ void sendData() {
   {
 	 // ESP.wdtFeed();
 	  tt = dataStore.shift();
-	  if (tt.valid == false)
+	  
+	  if (tt.time == 0)
+		  // no more records in buffer
 		  break;
+	  if (numRecords - sentRecords < 0)
+	  {
+		  // shouldn't get here...
+		  Serial.println("false end of store....");
+		  break;
+	  }
+	  if (tt.time == 0xFFFFFFFF) {
+		  // invalid records; delete storage
+		  Serial.println("deleting old store....");
+		  dataStore.reset();
+		  break;
+	  }
 	  redLed(HIGH);
 
 	 // tt = *ttp;
@@ -403,11 +426,13 @@ void sendData() {
 
 	  // how out-of-date is this record?
 	  //camper["seq"] = numRecords - sentRecords; 
-	  camper["seq"] = numRecords - tt.seq;
-	  camper["period"] = sleepSeconds;
+/*	  camper["seq"] = numRecords - tt.seq;
+	  camper["period"] = sleepSeconds*/;
+	  camper["seq"] = tt.time;
 
 	  ++sentRecords;
-	  Serial.print("sending record ");	  Serial.print(numRecords - tt.seq); Serial.println(" old");
+	  Serial.println();
+	  Serial.print("sending record for time ");	  Serial.println(tt.time); 
 	  Serial.print("connecting to ");	  Serial.println(server);
 	  const int httpPort = 80;
 
@@ -430,8 +455,8 @@ void sendData() {
 
 
 	  client.println("Connection: close\r\nContent-Type: application/json");
-	  sprintf(outBuf, "Content-Length: %u\r\n", dataLen);
-	  client.println(outBuf);
+	  sprintf(wifiBuf, "Content-Length: %u\r\n", dataLen);
+	  client.println(wifiBuf);
 	  camper.printTo(client);
 	  camper.printTo(Serial);
 	  unsigned long timeout = millis();
@@ -477,5 +502,6 @@ void sleep() {
 	WiFi.forceSleepWake();
     awakeTime = millis();
 	delay(1);
-
+	//loggerTime += sleepSeconds / 60;
+	loggerTime += 1;
 }

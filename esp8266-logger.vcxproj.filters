@@ -30,9 +30,15 @@
     <ClInclude Include="eeCircBuffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="timeserver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="victron.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="timeserver.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
