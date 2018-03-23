@@ -8,6 +8,7 @@ EEpromCircularBuffer.h - circular buffer library for Arduino, data stored in EEp
 #define EEPROMBUFFER_h
 #include <inttypes.h>
 #include <EEPROM.h>
+#include "rtcStore.h"
 
 template <typename T, int Size>
 class EECircularBuffer {
@@ -39,6 +40,8 @@ public:
 				readPos = writePos;
 			}
 		}
+		savePos();
+		EEPROM.commit();
 	}
 
 	// get last value pushed, remove from list
@@ -50,6 +53,7 @@ public:
 		}
 		T result = EEPROM.get(writePos * sizeof(T), nullT);
 		count--;
+		savePos();
 		return result;
 	}
 
@@ -61,8 +65,8 @@ public:
 		if (readPos >= Size) {
 			readPos = 0;
 		}
-
 		count--;
+		savePos();
 		return result;
 	}
 
@@ -83,15 +87,37 @@ public:
 				writePos = readPos;
 			}
 		}
+		savePos();
+		EEPROM.commit();
 	}
 
 	int remain() const {
 		return count;
 	}
+
 	void reset() {
 		writePos = 0; readPos = 0;  count = 0;
 	}
+	void reset(int16_t w, int16_t r, int16_t c) {
+		writePos = w; readPos = r;  count = c;
+	}
+	void savePos() {
+		Serial.print("Saving latest ee pointers: ");
+		Serial.print(writePos);	Serial.print(" ");	Serial.print(readPos); Serial.print(" ");	Serial.println(count);
+		// save pointers in rtc in case of reset etc
+		rtcData.data.EE_writePos= writePos; 
+		rtcData.data.EE_readPos = readPos;
+		rtcData.data.EE_count = count;
 
+
+		//Serial.print("Writing IP: "); Serial.println(rtcData.data.addr);
+		//Serial.print("Writing wp: "); Serial.println(rtcData.data.EE_writePos);
+		//Serial.print("Writing rp: "); Serial.println(rtcData.data.EE_readPos);
+		//Serial.print("Writing ct: "); Serial.println(rtcData.data.EE_count);
+		//Serial.print(rtcData.data.EE_writePos);	Serial.print(" ");	Serial.print(rtcData.data.EE_readPos); Serial.print(" ");	Serial.println(rtcData.data.EE_count);
+		putRTCmem();
+
+	}
 	// get (but leave) value at position 'pos'
 	T peek(int16_t pos) {
 		int16_t peekP = writePos - 1 - pos;

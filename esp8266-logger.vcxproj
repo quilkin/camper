@@ -86,11 +86,13 @@
   <ItemGroup>
     <ClInclude Include="config.h" />
     <ClInclude Include="eeCircBuffer.h" />
+    <ClInclude Include="rtcStore.h" />
     <ClInclude Include="timeserver.h" />
     <ClInclude Include="victron.h" />
     <ClInclude Include="__vm\.esp8266-logger.vsarduino.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="rtcStore.cpp" />
     <ClCompile Include="timeserver.cpp" />
     <ClCompile Include="victron.cpp" />
   </ItemGroup>

@@ -1,4 +1,5 @@
 //#include "circBuffer.h"
+#include "rtcStore.h"
 #include "timeserver.h"
 #include <EEPROM.h>
 #include "eeCircBuffer.h"
@@ -37,7 +38,7 @@ char server[] = "www.timetrials.org.uk";
 #define RED_LED_PIN 0
 // connection to reset for deep sleep waking
 #define SLEEP_WAKE 16
-
+#define SMALLEST_REALTIME 1000000
 // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
 OneWire oneWire(ONE_WIRE_BUS);
 
@@ -54,7 +55,12 @@ const int sleepSeconds = 30;
 unsigned long  awakeTime = 0;
 int awakeSeconds = 0;
 int testCount = 0;
-ulong loggerTime = 0;
+ulong realTime = 0;
+ulong pseudoTime = 0;
+bool realTimeJustEstablished = false;
+bool realTimeValid() {
+	return (realTime > SMALLEST_REALTIME);
+}
 
 struct VanData {
 	ulong time;
@@ -136,22 +142,13 @@ void setup_ds18B20() {
 	sensors.getAddress(fridgeTemp, 2);
 
 	sensors.setResolution(resolution);
-
-
-	//Serial.print("addr 1  = ");		printAddress(insideTemp);
-	//Serial.print("addr 2  = ");		printAddress(outsideTemp);
-	//Serial.print("addr 3  = ");		printAddress(fridgeTemp);
-
 	sensors.setWaitForConversion(false);
-
-
 }
 
 void redLed(int state) {
 	pinMode(RED_LED_PIN, OUTPUT);
 	digitalWrite(RED_LED_PIN, state-1);
-	//delay(10);
-	//digitalWrite(RED_LED_PIN, LOW);
+
 }
 
 int wifiStatus() {
@@ -228,8 +225,26 @@ bool startWiFi() {
 
 	Serial.println("");
 	Serial.print("WiFi connected, ");
-	Serial.print("IP address: ");	Serial.println(WiFi.localIP());
-  wifiStatus();
+	IPAddress ipaddr = WiFi.localIP();
+	Serial.print("IP address: ");	Serial.println(ipaddr);
+	rtcData.data.ip_addr = ipaddr;
+	//// save the IP address for later use
+	//putRTCmem();
+	if (pseudoTime > 0) {
+		// need to get new real time
+		setupUDP();
+		byte attempt = 5;
+		while (attempt-- > 0) {
+			if ((realTime = getTime()) > 0) {
+				realTimeJustEstablished = true;
+				pseudoTime = 0;
+				break;
+			}
+			delay(5000);
+
+		}
+	}
+    wifiStatus();
 	return true;
 }
 
@@ -238,23 +253,45 @@ void setup() {
   awakeTime = millis();
 
   Serial.begin(115200);
-  setupTime();
-  for (int attempt = 0; attempt < 5; attempt++) {
-	  loggerTime = getTime();
-	  if (loggerTime > 0)
-		  break;
-	  delay(10000);
+  delay(100);
+  
+  // first, check data stored in RTC
+  // if OK, can use this to find last-used EEprom data, and last-used IP address
+  if (getRTCmem()) {
+	  Serial.println("RTC memory intact:");
+	  printMemory();
+	  Serial.println(rtcData.data.EE_writePos);
+	  Serial.println(rtcData.data.EE_readPos);
+	  Serial.println(rtcData.data.EE_count);
+	  dataStore.reset(rtcData.data.EE_writePos, rtcData.data.EE_readPos, rtcData.data.EE_count);
+	  pseudoTime = rtcData.data.pseudo_time;
+	  if (pseudoTime > SMALLEST_REALTIME) // hasn't yet been used
+		  pseudoTime = 0;
   }
-  if (loggerTime == 0)
+  else {
+	  Serial.println("RTC memory failed");
+  }
+
+  setupTime();
+  if (wifiStatus() == WL_CONNECTED) {
+	  byte attempt = 5;
+	  while (attempt-- > 0) {
+		  if ((realTime = getTime()) > 0) {
+			  realTimeJustEstablished = true;
+			  break;
+		  }
+		  delay(5000);
+	  }
+  }
+  if (realTime == 0)
   {
-	  Serial.println("Unknown log time");
+	  Serial.println("Unknown real time, will use pseudo time for now");
   }
   setupVictron();
   setup_ds18B20();
   delay(10);
   awakeSeconds = 0;
   ESP.wdtEnable(0);
- //startWiFi();
 }
 
 void loop() {
@@ -319,14 +356,18 @@ void getTemps() {
 			}
 		}
 	}
-
-	Serial.println();
-	if (loggerTime == 0)
+	if (realTimeValid())	
 	{
-		Serial.println("Unknown log time");
-		return;
+		Serial.print("real time = ");		Serial.println(realTime);
+		currentValues.time = realTime;
 	}
-	currentValues.time = loggerTime;
+	else
+	{
+		Serial.println("Unknown realtime, using pseudo-time");
+		Serial.print("pseudo time = ");		Serial.println(pseudoTime);
+		currentValues.time = pseudoTime;
+	}
+	
 	currentValues.temp1 = (int)(t1 * 10);
 	currentValues.temp2 = (int)(t2 * 10);
 	currentValues.temp3 = (int)(t3 * 10);
@@ -346,14 +387,12 @@ void getTemps() {
 		currentValues.panel_mV = 0;
 		currentValues.power_W = 0;
 	}
-	//currentValues.valid = true;
-	//currentValues.seq = dataStore.remain();
 
 	dataStore.push(currentValues);
 	int stored = dataStore.remain();
-	
+	Serial.println();
 	Serial.print(stored); Serial.println(" value sets stored");
-	for (int rec = stored-1; rec >= 0; rec--)
+	for (int rec = 5; rec >= 0; rec--)
 	{
 		VanData tt = dataStore.peek(rec);
 		Serial.print(tt.time); Serial.print(":");
@@ -367,40 +406,41 @@ void getTemps() {
 		Serial.print(tt.yield_kWh); Serial.print("  ");
 		Serial.print(tt.max_P); Serial.println("  ");
 	}
-	if (++testCount >= 9)
-	{
-		testCount = 0;
-		Serial.println("Shifting out:");
-		for (int rec = stored - 1; rec >= 0; rec--)
-		{
-			VanData tt = dataStore.shift();
-			Serial.print(tt.time); Serial.print(":");
-			Serial.print(tt.temp1); Serial.print("  ");
-			Serial.print(tt.temp2); Serial.print("  ");
-			Serial.print(tt.temp3); Serial.println("  ");
-		}
-	}
+	//if (++testCount >= 9)
+	//{
+	//	testCount = 0;
+	//	Serial.println("Shifting out:");
+	//	for (int rec = stored - 1; rec >= 0; rec--)
+	//	{
+	//		VanData tt = dataStore.shift();
+	//		Serial.print(tt.time); Serial.print(":");
+	//		Serial.print(tt.temp1); Serial.print("  ");
+	//		Serial.print(tt.temp2); Serial.print("  ");
+	//		Serial.print(tt.temp3); Serial.println("  ");
+	//	}
+	//}
 }
 void sendData() {
 
   int numRecords = dataStore.remain();
   int sentRecords = 0;
   VanData tt;
+  ulong largestPseudoTime = 0;
 
   // Use WiFiClient class to create TCP connections
   WiFiClient client;
   while (true)
   {
-	 // ESP.wdtFeed();
-	  tt = dataStore.shift();
-	  
+	  // get records out, newest one first
+	  tt = dataStore.pop();
+	  Serial.print("stored time: "); Serial.println(tt.time);
 	  if (tt.time == 0)
 		  // no more records in buffer
 		  break;
-	  if (numRecords - sentRecords < 0)
+	  if (numRecords - sentRecords <= 0)
 	  {
 		  // shouldn't get here...
-		  Serial.println("false end of store....");
+		  Serial.print(numRecords);  Serial.print("....false end of store...."); Serial.println(sentRecords);
 		  break;
 	  }
 	  if (tt.time == 0xFFFFFFFF) {
@@ -424,10 +464,19 @@ void sendData() {
 	  camper["yield"] = tt.yield_kWh;
 	  camper["maxP"] = tt.max_P;
 
-	  // how out-of-date is this record?
-	  //camper["seq"] = numRecords - sentRecords; 
-/*	  camper["seq"] = numRecords - tt.seq;
-	  camper["period"] = sleepSeconds*/;
+	  // need to adjust realtime if pseudo time was in use
+	  if (realTimeJustEstablished) {
+		  if (tt.time < SMALLEST_REALTIME) {
+			  if (largestPseudoTime == 0 ) {
+				  largestPseudoTime = tt.time;
+			  }
+			  int timeOffset = (largestPseudoTime - tt.time + sleepSeconds / 60);
+			  Serial.print("offset time: ");	  Serial.println(timeOffset);
+			  tt.time = realTime - timeOffset;
+			  Serial.print("adjusted time: ");	  Serial.println(tt.time);
+		  }
+	  }
+
 	  camper["seq"] = tt.time;
 
 	  ++sentRecords;
@@ -479,6 +528,7 @@ void sendData() {
 	  }
 
   }
+  realTimeJustEstablished = false;
   client.stop();
   Serial.println();
   Serial.println("closing connection");
@@ -502,6 +552,15 @@ void sleep() {
 	WiFi.forceSleepWake();
     awakeTime = millis();
 	delay(1);
-	//loggerTime += sleepSeconds / 60;
-	loggerTime += 1;
+
+
+	if (realTimeValid()) {
+		//realTime += sleepSeconds / 60;
+		realTime += 1;
+	}
+	else {
+		//pseudoTime += sleepSeconds / 60;
+		pseudoTime += 1;
+		rtcData.data.pseudo_time = pseudoTime;
+	}
 }

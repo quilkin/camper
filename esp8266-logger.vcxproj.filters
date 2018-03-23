@@ -33,12 +33,18 @@
     <ClInclude Include="timeserver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="rtcStore.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="victron.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="timeserver.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rtcStore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

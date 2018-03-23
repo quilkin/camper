@@ -9,8 +9,9 @@
 	#include "WProgram.h"
 #endif
 
-void setupTime();
+bool setupTime();
 ulong  getTime();
+void setupUDP();
 
 extern char ssid[]; 
 extern char pw[]; 

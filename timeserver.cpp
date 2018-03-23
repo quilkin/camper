@@ -40,8 +40,9 @@ byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packe
 
 									// A UDP instance to let us send and receive packets over UDP
 WiFiUDP udp;
+bool startWiFi();
 
-void setupTime() {
+bool setupTime() {
 	//Serial.begin(115200);
 	//Serial.println();
 	//Serial.println();
@@ -49,23 +50,32 @@ void setupTime() {
 	// We start by connecting to a WiFi network
 	Serial.print("Connecting to ");
 	Serial.println(ssid);
-	WiFi.mode(WIFI_STA);
-	WiFi.begin(ssid, pw);
 
-	while (WiFi.status() != WL_CONNECTED) {
-		delay(500);
-		Serial.print(".");
-	}
-	Serial.println("");
+	if (startWiFi() == false)
+		return false;
+	//WiFi.mode(WIFI_STA);
+	//WiFi.begin(ssid, pw);
 
-	Serial.println("WiFi connected");
-	Serial.println("IP address: ");
-	Serial.println(WiFi.localIP());
+	//while (WiFi.status() != WL_CONNECTED) {
+	//	delay(500);
+	//	Serial.print(".");
+	//}
+	//Serial.println("");
 
+	//Serial.println("WiFi connected");
+	//Serial.println("IP address: ");
+	//Serial.println(WiFi.localIP());
+
+	setupUDP();
+}
+
+void setupUDP()
+{
 	Serial.println("Starting UDP");
 	udp.begin(localPort);
 	Serial.print("Local port: ");
 	Serial.println(udp.localPort());
+
 }
 
 
