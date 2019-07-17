@@ -9,8 +9,9 @@ EEpromCircularBuffer.h - circular buffer library for Arduino, data stored in EEp
 #include <inttypes.h>
 #include <EEPROM.h>
 #include "rtcStore.h"
-
+enum actions { PUSH, POP, SHIFT, UNSHIFT };
 template <typename T, int Size>
+
 class EECircularBuffer {
 public:
 
@@ -31,16 +32,18 @@ public:
 		}
 
 		if (count == Size) {
+			Serial.println("overwriting ");
 			if (++readPos == Size) {
 				readPos = 0;
 			}
 		}
 		else {
-			if (count++ == 0) {
+			if (++count == 0) {
+				Serial.println("emptied ");
 				readPos = writePos;
 			}
 		}
-		savePos();
+	//	savePos(PUSH);
 		EEPROM.commit();
 	}
 
@@ -53,7 +56,7 @@ public:
 		}
 		T result = EEPROM.get(writePos * sizeof(T), nullT);
 		count--;
-		savePos();
+	//	savePos(POP);
 		return result;
 	}
 
@@ -66,7 +69,7 @@ public:
 			readPos = 0;
 		}
 		count--;
-		savePos();
+	//	savePos(SHIFT);
 		return result;
 	}
 
@@ -87,7 +90,7 @@ public:
 				writePos = readPos;
 			}
 		}
-		savePos();
+	//	savePos(UNSHIFT);
 		EEPROM.commit();
 	}
 
@@ -101,8 +104,8 @@ public:
 	void reset(int16_t w, int16_t r, int16_t c) {
 		writePos = w; readPos = r;  count = c;
 	}
-	void savePos() {
-		Serial.print("Saving latest ee pointers: ");
+	void savePos(int which) {
+		Serial.print("Saving latest ee pointers: "); Serial.print(which); Serial.print(": ");
 		Serial.print(writePos);	Serial.print(" ");	Serial.print(readPos); Serial.print(" ");	Serial.println(count);
 		// save pointers in rtc in case of reset etc
 		rtcData.data.EE_writePos= writePos; 

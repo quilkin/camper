@@ -36,6 +36,7 @@ struct vitalData {
 	int16_t EE_count;
 	uint32_t ip_addr;
 	uint32_t pseudo_time;
+	bool realTimeJustEstablished;
 };
 
 struct rtcStore {

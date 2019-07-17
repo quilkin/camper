@@ -3,18 +3,19 @@
 #include "timeserver.h"
 #include <EEPROM.h>
 #include "eeCircBuffer.h"
-#include <WiFiUdp.h>
-#include <WiFiServer.h>
-#include <WiFiClientSecure.h>
-#include <WiFiClient.h>
-#include <ESP8266WiFiType.h>
-#include <ESP8266WiFiSTA.h>
-#include <ESP8266WiFiScan.h>
-#include <ESP8266WiFiMulti.h>
-#include <ESP8266WiFiGeneric.h>
-#include <ESP8266WiFiAP.h>
+//#include <WiFiUdp.h>
+//#include <WiFiServer.h>
+//#include <WiFiClientSecure.h>
+//#include <WiFiClient.h>
+//#include <ESP8266WiFiType.h>
+//#include <ESP8266WiFiSTA.h>
+//#include <ESP8266WiFiScan.h>
+//#include <ESP8266WiFiMulti.h>
+//#include <ESP8266WiFiGeneric.h>
+//#include <ESP8266WiFiAP.h>
 #include <DallasTemperature.h>
 #include <OneWire.h>
+#include <Ticker\Ticker.h>
 
 
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
@@ -23,12 +24,14 @@
 #include "config.h"
 #include "victron.h"
 
+//#define LOCAL_CE568
+
 #ifdef LOCAL_CE568
-char endpoint[] = " /WebMap/WebMap.svc/SaveWeather HTTP/1.1";
+char endpoint[] = " /WebMap/WebMap.svc/SaveCamper HTTP/1.1";
 char server[] = "CE568";  
 #else
-char endpoint[] = " /Service1.svc/SaveCamper HTTP/1.1";
-char server[] = "www.timetrials.org.uk";
+char endpoint[] = " /WebMap.svc/SaveCamper HTTP/1.1";
+char server[] = "www.quilkin.uk";   // this is the http connection, not https
 #endif
 
 
@@ -51,13 +54,31 @@ unsigned long lastTempRequest = 0;
 const int resolution = 9;
 const int delayInMillis = 750 / (1 << (12 - resolution));
 int idle = 0;
-const int sleepSeconds = 30;
+
+#ifdef LOCAL_CE568
+// debugging
+const int sleepSeconds = 60;
+#else
+const int sleepSeconds = 300;
+#endif
+
 unsigned long  awakeTime = 0;
 int awakeSeconds = 0;
 int testCount = 0;
 ulong realTime = 0;
 ulong pseudoTime = 0;
-bool realTimeJustEstablished = false;
+//bool realTimeJustEstablished = false;
+
+Ticker secondTick;
+volatile int watchdogCount = 0;
+
+void ISRwatchdog() {
+	watchdogCount++;
+	if (watchdogCount == sleepSeconds * 2) {
+		Serial.println("watchdog");
+		ESP.reset();
+	}
+}
 bool realTimeValid() {
 	return (realTime > SMALLEST_REALTIME);
 }
@@ -75,18 +96,21 @@ struct VanData {
 	int power_W;
 	int yield_kWh;
 	int max_P;
-	//int seq;
-
 };
 VanData nullData;
 VanData currentValues;
-//CircularBuffer<VanData,60> dataStore;
-EECircularBuffer<VanData, 6> dataStore;
+
+EECircularBuffer<VanData, 100> dataStore;
 
 
 const byte maxlength = 16;
-char ssid[maxlength + 1] = "XperiaZ2chrisF";
-char pw[maxlength + 1] = "icespy1643";
+#ifdef LOCAL_CE568
+char ssid[maxlength + 1] = "BTHub4-SFQ3";
+char pw[maxlength + 1] = "42784b6adb";
+#else
+char ssid[maxlength + 1] = "Orange-228C";
+char pw[maxlength + 1] = "25860329";
+#endif
 
 void readstring(char* buf) {
   char buffer[maxlength + 1];
@@ -158,27 +182,7 @@ int wifiStatus() {
 }
 bool startWiFi() {
 
-	// todo: need checksum on credentials to ensure validity
-	// todo: need pushbutton (or use different reset route? ) to reset credentials
-
 	if (wifiStatus()  != WL_CONNECTED) {
-	//if (1) {
-		if (strlen(ssid) < 3 || strlen(pw) < 3) {
-
-			Serial.print("WiFi SSID? ");
-			readstring(ssid);
-			Serial.print("WiFi password? ");
-			readstring(pw);
-		}
-
-		//Serial.print("SSID is: ");
-		//Serial.println(ssid);
-		//Serial.print("password is: ");
-		//Serial.println(pw);
-
-
-		// We start by connecting to a WiFi network
-
 		// ToDo: save IP address etc and try to use on subsequent connections : saving of time over using DHCP for each connection
 
 		//// config static IP
@@ -215,10 +219,6 @@ bool startWiFi() {
 		}
 		if (count > 100) {
 			Serial.println("Cannot connect to WiFi, giving up...");
-			// save this set until we get a connection.
-			//saveTemps();
-			//WiFi.disconnect();
-
 			return false;
 		}
 	}
@@ -228,15 +228,14 @@ bool startWiFi() {
 	IPAddress ipaddr = WiFi.localIP();
 	Serial.print("IP address: ");	Serial.println(ipaddr);
 	rtcData.data.ip_addr = ipaddr;
-	//// save the IP address for later use
-	//putRTCmem();
+
 	if (pseudoTime > 0) {
-		// need to get new real time
+		// need to get new real time from  a UDP time server
 		setupUDP();
 		byte attempt = 5;
 		while (attempt-- > 0) {
 			if ((realTime = getTime()) > 0) {
-				realTimeJustEstablished = true;
+				rtcData.data.realTimeJustEstablished = true;
 				pseudoTime = 0;
 				break;
 			}
@@ -251,7 +250,7 @@ bool startWiFi() {
 
 void setup() {
   awakeTime = millis();
-
+  secondTick.attach(1, ISRwatchdog);
   Serial.begin(115200);
   delay(100);
   
@@ -263,6 +262,10 @@ void setup() {
 	  Serial.println(rtcData.data.EE_writePos);
 	  Serial.println(rtcData.data.EE_readPos);
 	  Serial.println(rtcData.data.EE_count);
+	  //if (rtcData.data.EE_writePos == 0 && rtcData.data.EE_count == 0 && rtcData.data.EE_readPos != 0) {
+		 // Serial.println("EEreadpos suspect; resetting to zero");
+		 // rtcData.data.EE_readPos = 0;
+	  //}
 	  dataStore.reset(rtcData.data.EE_writePos, rtcData.data.EE_readPos, rtcData.data.EE_count);
 	  pseudoTime = rtcData.data.pseudo_time;
 	  if (pseudoTime > SMALLEST_REALTIME) // hasn't yet been used
@@ -270,6 +273,7 @@ void setup() {
   }
   else {
 	  Serial.println("RTC memory failed");
+	  dataStore.reset();
   }
 
   setupTime();
@@ -277,7 +281,7 @@ void setup() {
 	  byte attempt = 5;
 	  while (attempt-- > 0) {
 		  if ((realTime = getTime()) > 0) {
-			  realTimeJustEstablished = true;
+			  rtcData.data.realTimeJustEstablished = true;
 			  break;
 		  }
 		  delay(5000);
@@ -295,15 +299,16 @@ void setup() {
 }
 
 void loop() {
-
+	// deal with async serial data from Victron unit
 	RecvWithEndMarker();
 	HandleNewData();
-	ESP.wdtFeed();
+	
 
 	static unsigned long prev_millis = 0;
 	if (millis() - prev_millis > 1000) {
 		// i.e. every second
 		ESP.wdtFeed();
+		watchdogCount = 0;
 		if (++awakeSeconds >= 3)
 		{
 			// should be enough time for Victron to send data
@@ -350,8 +355,9 @@ void getTemps() {
 	if (t1 < -50 || t1 > 84) {
 		if (t2 < -50 || t2 > 84) {
 			if (t3 < -50 || t3 > 84) {
-				Serial.println("Invalid temperatures");
-				return;
+				Serial.println("all invalid temperatures");
+				t1 = t2 = t3 = 0;
+				//return;
 
 			}
 		}
@@ -359,12 +365,14 @@ void getTemps() {
 	if (realTimeValid())	
 	{
 		Serial.print("real time = ");		Serial.println(realTime);
+		Serial.print("real time mins = ");		Serial.println(realTime%60);
 		currentValues.time = realTime;
 	}
 	else
 	{
 		Serial.println("Unknown realtime, using pseudo-time");
 		Serial.print("pseudo time = ");		Serial.println(pseudoTime);
+		Serial.print("pseudo time mins = ");		Serial.println(pseudoTime%60);
 		currentValues.time = pseudoTime;
 	}
 	
@@ -406,19 +414,7 @@ void getTemps() {
 		Serial.print(tt.yield_kWh); Serial.print("  ");
 		Serial.print(tt.max_P); Serial.println("  ");
 	}
-	//if (++testCount >= 9)
-	//{
-	//	testCount = 0;
-	//	Serial.println("Shifting out:");
-	//	for (int rec = stored - 1; rec >= 0; rec--)
-	//	{
-	//		VanData tt = dataStore.shift();
-	//		Serial.print(tt.time); Serial.print(":");
-	//		Serial.print(tt.temp1); Serial.print("  ");
-	//		Serial.print(tt.temp2); Serial.print("  ");
-	//		Serial.print(tt.temp3); Serial.println("  ");
-	//	}
-	//}
+
 }
 void sendData() {
 
@@ -434,9 +430,9 @@ void sendData() {
 	  // get records out, newest one first
 	  tt = dataStore.pop();
 	  Serial.print("stored time: "); Serial.println(tt.time);
-	  if (tt.time == 0)
-		  // no more records in buffer
-		  break;
+	  //if (tt.time == 0)
+		 // // no more records in buffer
+		 // break;
 	  if (numRecords - sentRecords <= 0)
 	  {
 		  // shouldn't get here...
@@ -451,7 +447,6 @@ void sendData() {
 	  }
 	  redLed(HIGH);
 
-	 // tt = *ttp;
 	  camper["vanT"] = tt.temp1;
 	  camper["shadeT"] = tt.temp2;
 	  camper["fridgeT"] = tt.temp3;
@@ -465,7 +460,7 @@ void sendData() {
 	  camper["maxP"] = tt.max_P;
 
 	  // need to adjust realtime if pseudo time was in use
-	  if (realTimeJustEstablished) {
+	  if (rtcData.data.realTimeJustEstablished) {
 		  if (tt.time < SMALLEST_REALTIME) {
 			  if (largestPseudoTime == 0 ) {
 				  largestPseudoTime = tt.time;
@@ -492,8 +487,7 @@ void sendData() {
 	  }
 
 	  // We now create a URI for the request
-    Serial.println();
-	  //Serial.print("Requesting URL: ");	  Serial.println(endpoint);
+      Serial.println();
 	  Serial.print("Sending value set ");	  Serial.println(numRecords - sentRecords);
 	  int dataLen = camper.measureLength();
 	  Serial.print("Data set length: ");	  Serial.println(dataLen);
@@ -501,7 +495,6 @@ void sendData() {
 	  // This will send the request to the server, one set for each temperature stored (usually just one)
 	  client.print("POST "); client.println(endpoint);
 	  client.print("Host: "); client.println(server);
-
 
 	  client.println("Connection: close\r\nContent-Type: application/json");
 	  sprintf(wifiBuf, "Content-Length: %u\r\n", dataLen);
@@ -516,19 +509,19 @@ void sendData() {
 			  dataStore.unshift(tt);
 			  return;
 		  }
-	  //while (!client.available()) {
-		 // delay(1);
-
 	  }
 	  redLed(LOW);
 	  // Read all the lines of the reply from server and print them to Serial
+	  String line;
 	  while (client.available()) {
-		  String line = client.readStringUntil('\r');
+		  line = client.readStringUntil('\r');
 		  Serial.print(line);
 	  }
+	  Serial.print(line);
+	 // Serial.println("successful send");
 
   }
-  realTimeJustEstablished = false;
+  rtcData.data.realTimeJustEstablished = false;
   client.stop();
   Serial.println();
   Serial.println("closing connection");
@@ -555,12 +548,12 @@ void sleep() {
 
 
 	if (realTimeValid()) {
-		//realTime += sleepSeconds / 60;
-		realTime += 1;
+		realTime += sleepSeconds / 60;
+		//realTime += 1;
 	}
 	else {
-		//pseudoTime += sleepSeconds / 60;
-		pseudoTime += 1;
+		pseudoTime += sleepSeconds / 60;
+		//pseudoTime += 1;
 		rtcData.data.pseudo_time = pseudoTime;
 	}
 }
